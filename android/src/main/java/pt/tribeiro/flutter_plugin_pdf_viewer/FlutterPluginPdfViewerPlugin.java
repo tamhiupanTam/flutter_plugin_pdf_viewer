@@ -7,7 +7,9 @@ import android.graphics.pdf.PdfRenderer;
 import android.os.Environment;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
-
+import android.os.HandlerThread;
+import android.os.Process;
+import android.os.Handler;
 import java.io.File;
 import java.io.FileOutputStream;
 
@@ -24,7 +26,9 @@ import android.graphics.ColorMatrixColorFilter;
  */
 public class FlutterPluginPdfViewerPlugin implements MethodCallHandler {
     private static Registrar instance;
-
+    private HandlerThread handlerThread;
+    private Handler backgroundHandler;
+    private final Object pluginLocker = new Object();
     /**
      * Plugin registration.
      */
@@ -36,24 +40,48 @@ public class FlutterPluginPdfViewerPlugin implements MethodCallHandler {
 
     @Override
     public void onMethodCall(final MethodCall call, final Result result) {
-        Thread thread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                switch (call.method) {
-                    case "getNumberOfPages":
-                        result.success(getNumberOfPages((String) call.argument("filePath")));
-                        break;
-                    case "getPage":
-                        result.success(getPage((String) call.argument("filePath"), (int) call.argument("pageNumber")));
-                        break;
-                    default:
-                        result.notImplemented();
-                        break;
-                }
+        synchronized(pluginLocker){
+            if (backgroundHandler == null) {
+                handlerThread = new HandlerThread("flutterPdfViewer", Process.THREAD_PRIORITY_BACKGROUND);
+                handlerThread.start();
+                backgroundHandler = new Handler(handlerThread.getLooper());
             }
-        });
-        thread.start();
+        }
+        final Handler mainThreadHandler = new Handler();
+        backgroundHandler.post(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        switch (call.method) {
+                            case "getNumberOfPages":
+                                final String numResult = getNumberOfPages((String) call.argument("filePath"));
+                                mainThreadHandler.post(new Runnable(){
+                                    @Override
+                                    public void run() {
+                                        result.success(numResult);
+                                    }
+                                });
+                                break;
+                            case "getPage":
+                                final String pageResult = getPage((String) call.argument("filePath"), (int) call.argument("pageNumber"));
+                                mainThreadHandler.post(new Runnable(){
+                                    @Override
+                                    public void run() {
+                                        result.success(pageResult);
+                                    }
+                                });
+                                break;
+                            default:
+                                result.notImplemented();
+                                break;
+                        }
+                    }
+                }
+        );
     }
+
+
+
 
     private String getNumberOfPages(String filePath) {
         File pdf = new File(filePath);
